@@ -1,0 +1,47 @@
+# syntax=docker/dockerfile:1
+# ARTEX multi-stage build for Railway (repo's own Dockerfile expects a
+# pre-built binary in dist/, so build it here instead).
+
+# ---- Stage 1: Next.js frontend (static export) ----
+FROM node:20-bookworm-slim AS web
+WORKDIR /src/web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY web/ ./
+RUN npm run build:static
+
+# ---- Stage 2: Go binary with embedded UI ----
+FROM golang:1.26-bookworm AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+COPY --from=web /src/web/out ./server/webui/dist
+RUN CGO_ENABLED=0 go build -tags embedui -trimpath -ldflags "-s -w" -o /out/artex ./cmd/artex
+
+# ---- Stage 3: runtime (same base/tools as upstream Dockerfile) ----
+FROM python:3.12-slim-bookworm
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates ripgrep curl wget vim git jq unzip \
+      dnsutils iputils-ping netcat-openbsd inetutils-telnet whois nmap \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+RUN npm install -g @playwright/mcp@latest @playwright/cli@latest playwright@latest \
+    && playwright install --with-deps chromium \
+    && rm -rf /var/lib/apt/lists/*
+# rclone：把老归档/老证据搬到 Google Drive 腾磁盘（offload.sh）
+RUN curl -fsSL https://downloads.rclone.org/rclone-current-linux-amd64.zip -o /tmp/rclone.zip \
+    && unzip -o /tmp/rclone.zip -d /tmp/rclone-x \
+    && cp /tmp/rclone-x/rclone-*/rclone /usr/local/bin/rclone \
+    && chmod +x /usr/local/bin/rclone \
+    && rm -rf /tmp/rclone.zip /tmp/rclone-x
+WORKDIR /app
+COPY --from=build /out/artex /app/artex
+COPY start.sh /app/start.sh
+COPY offload.sh /app/offload.sh
+RUN chmod +x /app/artex /app/start.sh /app/offload.sh
+COPY skills/ /app/skills/
+EXPOSE 8787 8788
+ENTRYPOINT ["/app/start.sh"]
+CMD ["-addr", ":8787", "-proxy", ":8788"]
