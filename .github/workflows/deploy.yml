@@ -14,6 +14,7 @@ jobs:
         run: npm i -g @railway/cli
 
       - name: Deploy to artex service
-        run: railway up --project 658189ee-efa3-49c0-a667-41b86aff06a3 --service artex --environment production -y --ci
+        run: railway up --project 658189ee-efa3-49c0-a667-41b86aff06a3 --service artex -y --ci
+
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
