@@ -98,10 +98,16 @@ COPY --from=binary /out/artex /app/artex
 # 它同时负责把 SIGTERM 转发给 artex —— docker stop 只把信号发给 PID 1，
 # 不转发的话 artex 收不到、做不了优雅关闭，10 秒后被 SIGKILL 硬杀。
 COPY start.sh /app/start.sh
-RUN chmod +x /app/artex /app/start.sh
+# rclone + offload.sh：Railway 部署的磁盘空间管理，把老归档推到 Google Drive 腾空间
+RUN curl -fsSL https://downloads.rclone.org/rclone-current-linux-amd64.zip -o /tmp/rclone.zip \
+    && unzip -o /tmp/rclone.zip -d /tmp/rclone-x \
+    && cp /tmp/rclone-x/rclone-*/rclone /usr/local/bin/rclone \
+    && chmod +x /usr/local/bin/rclone \
+    && rm -rf /tmp/rclone.zip /tmp/rclone-x
+COPY offload.sh /app/offload.sh
+RUN chmod +x /app/artex /app/start.sh /app/offload.sh
 COPY skills/ /app/skills/
-# data/（SQLite + jwt.key）持久化点
-VOLUME ["/app/data"]
+# data/（SQLite + jwt.key）持久化点 —— Railway 侧通过 volume 挂载，VOLUME 指令会被拒绝，故删除
 EXPOSE 8787 8788
 ENTRYPOINT ["/app/start.sh"]
 CMD ["-addr", ":8787", "-proxy", ":8788"]
