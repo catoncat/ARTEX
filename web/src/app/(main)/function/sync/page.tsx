@@ -44,12 +44,16 @@ export default function AssetSyncPage() {
         <TabsList>
           <TabsTrigger value="scopesentry">ScopeSentry</TabsTrigger>
           <TabsTrigger value="fofa">FOFA</TabsTrigger>
+          <TabsTrigger value="shodan">Shodan</TabsTrigger>
         </TabsList>
         <TabsContent value="scopesentry" className="mt-4">
           <ScopeSentryPanel />
         </TabsContent>
         <TabsContent value="fofa" className="mt-4">
           <FofaPanel />
+        </TabsContent>
+        <TabsContent value="shodan" className="mt-4">
+          <ShodanPanel />
         </TabsContent>
       </Tabs>
     </div>
@@ -361,6 +365,263 @@ function FofaWorkbench() {
                 ))}
               </ul>
             )}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ── Shodan 面板 ──────────────────────────────────────────────────────────────
+
+type ShodanConfig = Awaited<ReturnType<typeof api.shodanConfig>>;
+
+function ShodanPanel() {
+  const [cfg, setCfg] = React.useState<ShodanConfig | null>(null);
+  const [loading, setLoading] = React.useState(true);
+
+  const load = React.useCallback(() => {
+    setLoading(true);
+    api
+      .shodanConfig()
+      .then(setCfg)
+      .catch((e) => toast.error(`读取 Shodan 配置失败：${e.message}`))
+      .finally(() => setLoading(false));
+  }, []);
+
+  React.useEffect(() => {
+    load();
+  }, [load]);
+
+  return (
+    <div className="space-y-4">
+      <ShodanConfigCard cfg={cfg} loading={loading} onChanged={load} />
+      {cfg?.valid ? <ShodanWorkbench /> : (
+        <Card>
+          <CardContent className="py-8 text-center text-muted-foreground text-sm">
+            配置 API Key 后即可按 Shodan 查询语句导入资产（全程被动，不向目标发送流量）。
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+function ShodanConfigCard({ cfg, loading, onChanged }: { cfg: ShodanConfig | null; loading: boolean; onChanged: () => void }) {
+  const [apiKey, setApiKey] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
+  const [quota, setQuota] = React.useState<string | null>(null);
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      const r = await api.shodanSaveConfig({ api_key: apiKey.trim() || undefined });
+      toast.success(r.valid ? "已保存并生效" : "已保存（配置尚不完整）");
+      setApiKey("");
+      setQuota(null);
+      onChanged();
+    } catch (e) {
+      toast.error(`保存失败：${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const checkQuota = async () => {
+    setBusy(true);
+    setQuota(null);
+    try {
+      const r = await api.shodanQuota();
+      const info = r.info;
+      if (!info) {
+        setQuota("接口返回异常");
+        return;
+      }
+      const parts: string[] = [];
+      if (info["query_credits"] != null) parts.push(`查询额度剩余 ${info["query_credits"]}`);
+      if (info["scan_credits"] != null) parts.push(`扫描额度剩余 ${info["scan_credits"]}`);
+      if (info["plan"]) parts.push(`套餐 ${info["plan"]}`);
+      setQuota(parts.length > 0 ? parts.join("  ·  ") : JSON.stringify(info));
+    } catch (e) {
+      toast.error(`查询余额失败：${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between">
+        <CardTitle className="flex items-center gap-2 text-base">
+          <PlugZapIcon className="size-4" /> Shodan 数据源
+          {loading ? (
+            <Badge variant="secondary">检测中…</Badge>
+          ) : cfg?.valid ? (
+            <Badge className="bg-emerald-600 hover:bg-emerald-600">
+              <CheckCircle2Icon className="mr-1 size-3" /> 已配置
+            </Badge>
+          ) : (
+            <Badge variant="outline">未配置</Badge>
+          )}
+        </CardTitle>
+        <Button variant="ghost" size="sm" onClick={onChanged} disabled={loading}>
+          <RefreshCwIcon className={loading ? "size-4 animate-spin" : "size-4"} /> 刷新
+        </Button>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="grid gap-3 md:grid-cols-2">
+          <div className="space-y-1.5">
+            <Label>API Key（留空保留原值{cfg?.key_set ? "，已设置" : ""}）</Label>
+            <Input type="password" placeholder="Shodan API Key" value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button onClick={save} disabled={busy}>
+            保存配置
+          </Button>
+          <Button variant="outline" onClick={checkQuota} disabled={busy || !cfg?.valid}>
+            查询余额（免费）
+          </Button>
+          {quota && <span className="text-muted-foreground font-mono text-xs">{quota}</span>}
+        </div>
+        <p className="text-muted-foreground text-xs">
+          查询走 Shodan 历史索引，全程不向目标发送流量。每次 search 请求扣 1 查询额度（与返回条数无关），预览只扣 1 额度。
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
+
+function ShodanWorkbench() {
+  const [query, setQuery] = React.useState(`ssl:"example.com"`);
+  const [size, setSize] = React.useState(1000);
+  const [companyName, setCompanyName] = React.useState("");
+  const [createCompany, setCreateCompany] = React.useState(true);
+  const [preview, setPreview] = React.useState<{ match_size: number; sample: unknown[] } | null>(null);
+  const [busy, setBusy] = React.useState<"none" | "preview" | "import">("none");
+  const [result, setResult] = React.useState<Awaited<ReturnType<typeof api.shodanImport>> | null>(null);
+
+  const doPreview = async () => {
+    if (!query.trim()) return toast.error("请填写 Shodan 查询语句");
+    setBusy("preview");
+    setPreview(null);
+    try {
+      const r = await api.shodanPreview(query.trim());
+      setPreview(r);
+      const m = query.match(/ssl:"([^"]+)"/) || query.match(/hostname:([^\s]+)/);
+      if (m && !companyName) setCompanyName(m[1]);
+      toast.success(`命中 ${r.match_size} 条`);
+    } catch (e) {
+      toast.error(`预览失败：${(e as Error).message}`);
+    } finally {
+      setBusy("none");
+    }
+  };
+
+  const doImport = async () => {
+    if (!query.trim()) return toast.error("请填写 Shodan 查询语句");
+    setBusy("import");
+    setResult(null);
+    try {
+      const r = await api.shodanImport({
+        query: query.trim(),
+        size,
+        company_name: companyName.trim() || undefined,
+        create_company: createCompany,
+      });
+      setResult(r);
+      toast.success(`导入完成：${r.synced?.ip ?? 0} 个 IP / ${r.synced?.port ?? 0} 个端口`);
+    } catch (e) {
+      toast.error(`导入失败：${(e as Error).message}`);
+    } finally {
+      setBusy("none");
+    }
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Shodan 查询导入</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid gap-3 md:grid-cols-[1fr_auto]">
+          <div className="space-y-1.5">
+            <Label>Shodan 查询语句</Label>
+            <Input
+              placeholder={'ssl:"example.com"'}
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && doPreview()}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label>条数上限</Label>
+            <select
+              className="border-input bg-background h-9 w-32 rounded-md border px-3 text-sm"
+              value={size}
+              onChange={(e) => setSize(Number(e.target.value))}
+            >
+              {[100, 500, 1000, 5000, 10000].map((n) => (
+                <option key={n} value={n}>
+                  {n}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+        <div className="grid gap-3 md:grid-cols-2">
+          <div className="space-y-1.5">
+            <Label>归属企业（空 = 从查询语句提取）</Label>
+            <Input placeholder="如：乐天集团" value={companyName} onChange={(e) => setCompanyName(e.target.value)} />
+          </div>
+          <div className="flex items-end gap-2 pb-0.5">
+            <label htmlFor="shodan-create-company" className="flex items-center gap-1.5 text-sm">
+              <Checkbox
+                id="shodan-create-company"
+                checked={createCompany}
+                onCheckedChange={(c) => setCreateCompany(!!c)}
+              />
+              企业不存在时创建并写入资产范围
+            </label>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" onClick={doPreview} disabled={busy !== "none"}>
+            <SearchIcon className={busy === "preview" ? "size-4 animate-pulse" : "size-4"} /> 预览命中（扣 1 额度）
+          </Button>
+          <Button onClick={doImport} disabled={busy !== "none"}>
+            <DownloadIcon className={busy === "import" ? "size-4 animate-pulse" : "size-4"} /> 导入资产
+          </Button>
+        </div>
+        {preview && (
+          <div className="space-y-2 rounded-md border bg-muted/40 p-3 text-sm">
+            <p>
+              命中总数 <b>{preview.match_size}</b> 条
+              {preview.match_size > size && <span className="text-amber-600 dark:text-amber-500">（超过条数上限，导入将截断前 {size} 条）</span>}
+            </p>
+            {preview.sample?.length > 0 && (
+              <pre className="text-muted-foreground overflow-x-auto font-mono text-xs">
+                {JSON.stringify(preview.sample[0])}
+              </pre>
+            )}
+          </div>
+        )}
+        {result && (
+          <div className="space-y-2 rounded-md border bg-muted/40 p-3 text-sm">
+            <p>
+              导入完成：<b>{result.synced?.ip ?? 0}</b> 个 IP / <b>{result.synced?.port ?? 0}</b> 个端口
+              {result.companies?.length ? <>，企业：{result.companies.join("、")}</> : null}
+            </p>
+            {result.warnings?.map((w) => (
+              <p key={w} className="text-muted-foreground text-xs">{w}</p>
+            ))}
+            {result.errors?.length ? (
+              <ul className="text-red-600 dark:text-red-400 text-xs list-disc pl-4">
+                {result.errors.map((em) => (
+                  <li key={em}>{em}</li>
+                ))}
+              </ul>
+            ) : null}
           </div>
         )}
       </CardContent>

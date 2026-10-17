@@ -1160,6 +1160,25 @@ export const api = {
       errors: string[] | null;
     }>("/sync/fofa/import", body),
 
+  // ---- 资产同步 (Shodan 数据源) ----
+  shodanConfig: () =>
+    get<{
+      key_set: boolean;
+      valid: boolean;
+    }>("/sync/shodan/config"),
+  shodanSaveConfig: (body: { api_key?: string }) =>
+    post<{ ok: boolean; valid: boolean }>("/sync/shodan/config", body),
+  shodanQuota: () => get<{ info: Record<string, unknown> | null }>("/sync/shodan/quota"),
+  shodanPreview: (query: string) =>
+    post<{ match_size: number; sample: unknown[] }>("/sync/shodan/preview", { query }),
+  shodanImport: (body: { query: string; size?: number; company_name?: string; create_company?: boolean }) =>
+    post<{
+      synced: Record<string, number>;
+      companies: string[] | null;
+      warnings: string[] | null;
+      errors: string[] | null;
+    }>("/sync/shodan/import", body),
+
   // ---- skills (文件系统) ----
   skills: () => get<{ skills: SkillItem[] }>("/skills").then((r) => arr(r.skills)),
   createSkill: (s: {
