@@ -42,6 +42,10 @@ forward() {
 }
 trap forward INT TERM
 
+# 空间卸载后台循环：每 30 分钟把老归档/老证据推到 Google Drive（offload.sh）。
+# 没配 Drive 令牌时 offload.sh 自己会跳过，所以这里无条件拉起。
+( while :; do /app/offload.sh; sleep "${ARTEX_OFFLOAD_INTERVAL:-1800}"; done ) &
+
 delay=1
 while :; do
 	"$BIN" "$@" &
